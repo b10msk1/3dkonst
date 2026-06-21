@@ -30,9 +30,18 @@
         }
     </script>
     
-    <!-- Three.js Kärna & GLTFLoader -->
+    <!-- Three.js Kärna & Laddare -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
+
+    <!-- POST-PROCESSING (Glow/Bloom effekter) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 
     <style>
         body { margin: 0; overflow: hidden; background-color: #0a0f1a; }
@@ -84,7 +93,16 @@
         </div>
     </div>
 
-    <!-- Taktisk Informations-Panel (Nytt!) -->
+    <!-- HOLOGRAFISK OVERLAY (NYTT: Svävar vid muspekaren/objektet) -->
+    <div id="hologram-ui" class="absolute pointer-events-none opacity-0 transition-opacity duration-300 flex flex-col items-center justify-center -translate-x-1/2 -translate-y-1/2 z-30 drop-shadow-lg">
+        <span class="text-accent font-black uppercase tracking-widest text-[9px] animate-pulse mb-1">[ KLICKA FÖR SYSTEM-DATA ]</span>
+        <div class="bg-panel/90 backdrop-blur-sm border border-[#1e293b] px-4 py-2 rounded-xl flex items-center gap-2">
+            <div class="w-1.5 h-1.5 bg-accent rounded-full"></div>
+            <span id="hologram-title" class="text-slate-100 font-bold tracking-tighter text-sm uppercase italic">Titel</span>
+        </div>
+    </div>
+
+    <!-- Taktisk Informations-Panel -->
     <div id="info-panel" class="absolute right-0 top-0 bottom-0 w-80 sm:w-96 bg-panel/95 backdrop-blur-xl border-l border-[#1e293b] panel-closed transition-transform duration-500 ease-in-out z-40 p-8 flex flex-col shadow-2xl">
         <div class="flex justify-between items-center mb-8">
             <div class="flex items-center gap-2">
@@ -103,9 +121,15 @@
             <span class="text-[8px] font-black uppercase tracking-widest text-slate-500 block mb-1">Status</span>
             <span class="text-[10px] font-black uppercase tracking-widest text-accent flex items-center gap-2">
                 <div class="w-1.5 h-1.5 bg-accent rounded-full animate-pulse"></div>
-                Utställd / Hantverk
+                Utställd / Validerad
             </span>
         </div>
+    </div>
+
+    <!-- VIRTUELL GUIDE (Bot-dialog) (NYTT) -->
+    <div id="guide-dialog" class="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 flex items-center gap-4 bg-panel/80 backdrop-blur-md px-6 py-3 rounded-[2rem] border border-[#1e293b] shadow-2xl transition-opacity duration-500 opacity-0 pointer-events-none">
+        <div class="w-2 h-2 bg-accent rounded-full animate-pulse"></div>
+        <p id="guide-text" class="text-slate-100 font-black uppercase tracking-widest text-[10px] italic">Initierar guide-protokoll...</p>
     </div>
 
     <!-- 3D Canvas -->
@@ -115,16 +139,20 @@
         lucide.createIcons();
 
         // --- FILVÄGAR ---
-        const MODEL_URL = 'character_base.glb';
-        const IDLE_ANIM_URL = 'idle.glb';
-        const WALK_ANIM_URL = 'walk.glb';
+        const MODEL_URL = 'https://raw.githubusercontent.com/b10msk1/3dhall/main/character_base.glb';
+        const IDLE_ANIM_URL = 'https://raw.githubusercontent.com/b10msk1/3dhall/main/idle.glb';
+        const WALK_ANIM_URL = 'https://raw.githubusercontent.com/b10msk1/3dhall/main/walk.glb';
         const ARTWORK_URL_1 = 'min_tavla.jpg'; 
+        const HANDICRAFT_URL_1 = null; 
+        const HANDICRAFT_URL_2 = null;
 
         // 3D System Variabler
-        let scene, camera, renderer, clock;
+        let scene, camera, renderer, clock, composer;
         let mixer, characterModel;
+        let playerGroup; // NYTT: En wrapper som hanterar rörelse så vi kan rotera karaktären fritt!
         const animations = {}; 
         let currentAction = null;
+        let mainGltfLoader;
 
         // Kamera & Interaktions-variabler
         const mouse = new THREE.Vector2();
@@ -137,13 +165,13 @@
         const artworks = []; 
         let hoveredArtwork = null;
 
-        // --- FOKUS-KAMERA VARIABLER (NYTT) ---
         let isFocused = false;
         let focusCameraTarget = new THREE.Vector3();
         let focusLookAtTarget = new THREE.Vector3();
-        let currentLookAt = new THREE.Vector3(); // Används för mjuk blick-överföring
+        let currentLookAt = new THREE.Vector3(); 
+        let focusedArtwork = null; // NYTT: Håller koll på vilket verk vi fokuserar på
+        let guideBot; // NYTT: Vår svävande AI-följeslagare
 
-        // Kontroll-variabler
         const keys = { w: false, a: false, s: false, d: false };
         const moveSpeed = 4.0;
 
@@ -170,31 +198,73 @@
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             renderer.shadowMap.enabled = true;
             renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
             container.appendChild(renderer.domElement);
 
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+            const renderScene = new THREE.RenderPass(scene, camera);
+            const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.5, 0.8);
+            composer = new THREE.EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // OPTIMERAD LJUSSÄTTNING (Nu mycket ljusare)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // Höjt från 0.1
             scene.add(ambientLight);
 
-            const dirLight = new THREE.DirectionalLight(0xe58e26, 1.0);
+            const hemiLight = new THREE.HemisphereLight(0x0a0f1a, 0x0f172a, 2.5); // Höjt från 1.5 för ljusare skuggor
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xe58e26, 1.5); // Höjt huvudljus
             dirLight.position.set(5, 10, 5);
             dirLight.castShadow = true;
             dirLight.shadow.mapSize.width = 2048;
             dirLight.shadow.mapSize.height = 2048;
             scene.add(dirLight);
 
+            mainGltfLoader = new THREE.GLTFLoader();
+            const dracoLoader = new THREE.DRACOLoader();
+            dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.4.1/');
+            mainGltfLoader.setDRACOLoader(dracoLoader);
+
             buildGalleryRoom();
 
-            const loader = new THREE.GLTFLoader();
-            const loadGLTF = (url) => new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
+            // Skapa Wrapper-gruppen för spelaren
+            playerGroup = new THREE.Group();
+            scene.add(playerGroup);
+
+            // NYTT: Personligt ljus! Gör att din karaktär alltid syns tydligt.
+            const personalLight = new THREE.PointLight(0xffffff, 0.8, 15);
+            personalLight.position.set(0, 2.5, 0);
+            playerGroup.add(personalLight);
+
+            // NYTT: Skapa den Virtuella Guiden (Svävande orb)
+            const botGeo = new THREE.SphereGeometry(0.12, 16, 16);
+            const botMat = new THREE.MeshStandardMaterial({ color: 0x161d2b, emissive: 0xe58e26, emissiveIntensity: 2.0 });
+            guideBot = new THREE.Mesh(botGeo, botMat);
+            guideBot.position.set(0, 3, 0);
+            scene.add(guideBot);
+            
+            // Visa första guide-meddelandet
+            setTimeout(() => showGuideText("Välkommen till hallen. WASD för att navigera."), 3000);
 
             const loadCharacterSystem = async () => {
+                const loadGLTF = (url) => new Promise((resolve, reject) => mainGltfLoader.load(url, resolve, undefined, reject));
+
                 try {
                     updateStatus("Laddar huvudmodell...");
                     const gltfModel = await loadGLTF(MODEL_URL);
                     characterModel = gltfModel.scene;
-                    scene.add(characterModel);
                     
-                    characterModel.castShadow = true;
+                    characterModel.scale.set(0.01, 0.01, 0.01); 
+                    
+                    // FIX: Här ställer vi upp karaktären! 
+                    // Beroende på hur han ligger, ändra denna till Math.PI / 2 eller -Math.PI / 2
+                    characterModel.rotation.x = Math.PI / 2; 
+                    
+                    // Lägg till modellen i vår "låda" (wrapper)
+                    playerGroup.add(characterModel);
+                    
                     characterModel.traverse((node) => { if (node.isMesh) node.castShadow = true; });
 
                     mixer = new THREE.AnimationMixer(characterModel);
@@ -205,12 +275,13 @@
                         if (gltfIdle.animations.length > 0) animations['idle'] = mixer.clipAction(gltfIdle.animations[0]);
                         const gltfWalk = await loadGLTF(WALK_ANIM_URL);
                         if (gltfWalk.animations.length > 0) animations['walk'] = mixer.clipAction(gltfWalk.animations[0]);
-                    } catch (e) { console.warn("Saknar animationsfiler, kör standard."); }
+                    } catch (e) { console.warn("Saknar animationsfiler."); }
 
                     if (animations['idle']) playAnimation('idle');
 
                     finishLoading("Karaktär & System Online");
                 } catch (error) {
+                    console.error(error);
                     createFallbackCharacter();
                     finishLoading("Karaktär: Fallback");
                 }
@@ -218,26 +289,23 @@
 
             loadCharacterSystem();
 
-            // Event Listeners
             window.addEventListener('keydown', onKeyDown, false);
             window.addEventListener('keyup', onKeyUp, false);
             window.addEventListener('mousemove', onMouseMove, false);
-            window.addEventListener('mousedown', onMouseDown, false); // Klickhanterare för UI
+            window.addEventListener('mousedown', onMouseDown, false); 
             window.addEventListener('mouseup', () => isDragging = false, false);
             window.addEventListener('resize', onWindowResize, false);
             
-            // Stäng UI-knapp
             document.getElementById('close-panel').addEventListener('click', closeInfoPanel);
 
             animate();
         };
 
-        // --- BYGG GALLERIET ---
         const buildGalleryRoom = () => {
             const roomSize = 40;
             const wallHeight = 8;
 
-            const floorMat = new THREE.MeshStandardMaterial({ color: 0x05080f, roughness: 0.8, metalness: 0.2 });
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x05080f, roughness: 0.7, metalness: 0.3 });
             const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomSize, roomSize), floorMat);
             floor.rotation.x = -Math.PI / 2;
             floor.receiveShadow = true;
@@ -269,7 +337,6 @@
             rightWall.receiveShadow = true;
             scene.add(rightWall);
 
-            // TAVLOR PÅ VÄGGEN (2D Konst)
             addArtworkPlaceholder(0, 3, -roomSize / 2 + 0.1, 0, ARTWORK_URL_1, {
                 title: "Oljemålning 01",
                 desc: "Ett stämningsfullt verk som utforskar mörker och ljus."
@@ -279,20 +346,19 @@
                 desc: "Tidiga tankar kring form och textur."
             });
 
-            // NYTT: HANTVERK / PIEDESTALER (3D Konst)
             addHandicraftDisplay(8, 0, -8, {
                 title: "Keramikskulptur",
-                desc: "Handdrejad keramik formgiven med taktila ytor och mörk glasyr. En fysisk manifestation av galleriets tema."
-            });
+                desc: "Handdrejad keramik formgiven med taktila ytor och mörk glasyr."
+            }, HANDICRAFT_URL_1);
             
             addHandicraftDisplay(-8, 0, -8, {
                 title: "Träsnideri",
-                desc: "Ett intrikat mönster uthugget i mörkt trä. Kräver en närmare blick för att avslöja detaljerna."
-            });
+                desc: "Ett intrikat mönster uthugget i mörkt trä."
+            }, HANDICRAFT_URL_2);
         };
 
         const addArtworkPlaceholder = (x, y, z, rotY, imageUrl, info) => {
-            const frameMat = new THREE.MeshStandardMaterial({ color: 0x161d2b, emissive: 0xe58e26, emissiveIntensity: 0.3, side: THREE.DoubleSide });
+            const frameMat = new THREE.MeshStandardMaterial({ color: 0x161d2b, emissive: 0xe58e26, emissiveIntensity: 0.5, side: THREE.DoubleSide });
             const frame = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 3.2), frameMat);
             frame.position.set(x, y, z);
             frame.rotation.y = rotY;
@@ -309,12 +375,11 @@
             canvasMesh.position.set(x, y, z + 0.05);
             canvasMesh.rotation.y = rotY;
             
-            // Spara data för interaktion
             canvasMesh.userData = { isArtwork: true, highlightMesh: frame, info: info };
             artworks.push(canvasMesh);
             scene.add(canvasMesh);
 
-            const spotLight = new THREE.SpotLight(0xfff0dd, 2.5);
+            const spotLight = new THREE.SpotLight(0xfff0dd, 3.0);
             spotLight.position.set(x + Math.sin(rotY) * 5, y + 4, z + Math.cos(rotY) * 5);
             spotLight.target = canvasMesh;
             spotLight.angle = Math.PI / 7;
@@ -323,9 +388,8 @@
             scene.add(spotLight);
         };
 
-        // --- NYTT: PIEDESTAL FÖR HANTVERK ---
-        const addHandicraftDisplay = (x, y, z, info) => {
-            // Själva pelaren
+        // --- UPPDATERAD MED GLASMONTAR ---
+        const addHandicraftDisplay = (x, y, z, info, modelUrl) => {
             const baseMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.9 });
             const base = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1, 1.5, 32), baseMat);
             base.position.set(x, y + 0.75, z);
@@ -333,41 +397,59 @@
             base.castShadow = true;
             scene.add(base);
 
-            // Interaktionsyta (Osynlig box för raycastern)
-            const hitBox = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 2), new THREE.MeshBasicMaterial({ visible: false }));
-            hitBox.position.set(x, y + 1.5, z);
+            // NYTT: En lyxig glashuv över hantverket
+            const glassMat = new THREE.MeshPhysicalMaterial({
+                color: 0x0f172a,
+                metalness: 0.1,
+                roughness: 0.05,
+                transmission: 0.9, // Det här är det som gör det till glas!
+                transparent: true,
+                thickness: 0.5
+            });
+            const glassDome = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 0.95, 2, 32), glassMat);
+            glassDome.position.set(x, y + 2.5, z);
+            scene.add(glassDome);
+
+            const hitBox = new THREE.Mesh(new THREE.BoxGeometry(2, 4, 2), new THREE.MeshBasicMaterial({ visible: false }));
+            hitBox.position.set(x, y + 2.0, z);
             scene.add(hitBox);
 
-            // Accent-ring (lyser upp vid hover)
-            const ring = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.03, 16, 64), new THREE.MeshStandardMaterial({ color: 0xe58e26, emissive: 0xe58e26, emissiveIntensity: 0.0 }));
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.03, 16, 64), new THREE.MeshStandardMaterial({ color: 0xe58e26, emissive: 0xe58e26, emissiveIntensity: 0.0 }));
             ring.position.set(x, y + 1.55, z);
             ring.rotation.x = Math.PI / 2;
             scene.add(ring);
 
-            // Spara data
             hitBox.userData = { isArtwork: true, highlightMesh: ring, info: info, is3D: true };
             artworks.push(hitBox);
 
-            // Platshållare för hantverket (Snurrande form)
-            const artGeo = new THREE.TorusKnotGeometry(0.3, 0.1, 100, 16);
-            const artMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.6, roughness: 0.4 });
-            const artMesh = new THREE.Mesh(artGeo, artMat);
-            artMesh.position.set(x, y + 2.2, z);
-            artMesh.castShadow = true;
-            hitBox.userData.modelMesh = artMesh; // Sparas för animation i render loopen
-            scene.add(artMesh);
+            if (modelUrl) {
+                mainGltfLoader.load(modelUrl, (gltf) => {
+                    const artMesh = gltf.scene;
+                    artMesh.scale.set(1, 1, 1); 
+                    artMesh.position.set(x, y + 1.5, z); 
+                    artMesh.traverse((node) => { if (node.isMesh) node.castShadow = true; });
+                    scene.add(artMesh);
+                    hitBox.userData.modelMesh = artMesh;
+                });
+            } else {
+                const artGeo = new THREE.TorusKnotGeometry(0.3, 0.1, 100, 16);
+                const artMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.6, roughness: 0.4 });
+                const artMesh = new THREE.Mesh(artGeo, artMat);
+                artMesh.position.set(x, y + 2.2, z);
+                artMesh.castShadow = true;
+                hitBox.userData.modelMesh = artMesh; 
+                scene.add(artMesh);
+            }
 
-            // Ljussättning ovanifrån
-            const spotLight = new THREE.SpotLight(0xfff0dd, 1.5);
+            const spotLight = new THREE.SpotLight(0xfff0dd, 4.0);
             spotLight.position.set(x, y + 6, z);
-            spotLight.target = artMesh;
-            spotLight.angle = Math.PI / 8;
+            spotLight.target = hitBox; 
+            spotLight.angle = Math.PI / 6;
             spotLight.penumbra = 0.5;
             spotLight.castShadow = true;
             scene.add(spotLight);
         };
 
-        // --- UI FUNKTIONER ---
         const openInfoPanel = (info) => {
             document.getElementById('info-title').innerText = info.title;
             document.getElementById('info-desc').innerText = info.desc;
@@ -376,9 +458,23 @@
         };
 
         const closeInfoPanel = () => {
-            isFocused = false; // Bryt fokusläget när panelen stängs (NYTT)
+            isFocused = false; 
+            focusedArtwork = null; // Släpp fokus
             document.getElementById('info-panel').classList.remove('panel-open');
             document.getElementById('info-panel').classList.add('panel-closed');
+            showGuideText("Fortsätter skanning..."); // Guiden kommenterar avslut
+        };
+
+        // NYTT: Funktion för att visa guidens meddelanden
+        const showGuideText = (text) => {
+            const dialog = document.getElementById('guide-dialog');
+            document.getElementById('guide-text').innerText = text;
+            dialog.classList.remove('opacity-0');
+            
+            clearTimeout(window.guideTimeout);
+            window.guideTimeout = setTimeout(() => {
+                dialog.classList.add('opacity-0');
+            }, 5000);
         };
 
         const playAnimation = (name) => {
@@ -394,7 +490,7 @@
             characterModel = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), mat);
             characterModel.position.y = 1;
             characterModel.castShadow = true;
-            scene.add(characterModel);
+            playerGroup.add(characterModel);
         };
 
         const finishLoading = (statusText) => {
@@ -406,19 +502,27 @@
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight); 
         };
 
-        // --- INPUT & INTERAKTION ---
         const onMouseMove = (event) => {
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
-            if (isDragging && !isFocused) { // Förhindra orbit-snurr när vi är i fokusläge (NYTT)
+            if (isDragging) { 
                 const deltaX = event.clientX - previousMousePosition.x;
                 const deltaY = event.clientY - previousMousePosition.y;
-                cameraAngleX -= deltaX * 0.005;
-                cameraAngleY -= deltaY * 0.005;
-                cameraAngleY = Math.max(0.1, Math.min(Math.PI / 2.2, cameraAngleY));
+                
+                // NYTT: Manuellt snurr av 3D-objekt om vi fokuserar på det
+                if (isFocused && focusedArtwork && focusedArtwork.userData.is3D) {
+                    focusedArtwork.userData.modelMesh.rotation.y += deltaX * 0.01;
+                } 
+                // Annars: Snurra kameran
+                else if (!isFocused) {
+                    cameraAngleX -= deltaX * 0.005;
+                    cameraAngleY -= deltaY * 0.005;
+                    cameraAngleY = Math.max(0.1, Math.min(Math.PI / 2.2, cameraAngleY));
+                }
             }
             previousMousePosition = { x: event.clientX, y: event.clientY };
         };
@@ -426,28 +530,28 @@
         const onMouseDown = () => {
             isDragging = true;
             
-            // Klick-interaktion för att öppna panelen och trigga Fokus-Kamera (UPPDATERAD)
             if (hoveredArtwork && hoveredArtwork.userData.info && !isFocused) {
                 isFocused = true;
+                focusedArtwork = hoveredArtwork; // Spara referens
                 openInfoPanel(hoveredArtwork.userData.info);
+                
+                showGuideText(`Analyserar: ${hoveredArtwork.userData.info.title}`);
 
                 const objPos = hoveredArtwork.position;
                 const is3D = hoveredArtwork.userData.is3D;
-                const focusDist = is3D ? 3.5 : 4.5; // Gå närmare hantverk, lite längre ifrån tavlor
+                const focusDist = is3D ? 4.5 : 4.5; 
 
                 if (is3D) {
-                    // För 3D-hantverk: Beräkna riktning från objektet till spelaren
-                    let dirToChar = new THREE.Vector3().subVectors(characterModel.position, objPos);
-                    dirToChar.y = 0; // Håll kameran plan
+                    let dirToChar = new THREE.Vector3().subVectors(playerGroup.position, objPos);
+                    dirToChar.y = 0; 
                     dirToChar.normalize();
                     
                     focusCameraTarget.copy(objPos).add(dirToChar.multiplyScalar(focusDist));
-                    focusCameraTarget.y = objPos.y + 1.0; // Titta lite snett ovanifrån
+                    focusCameraTarget.y = objPos.y + 1.5; 
                     
                     focusLookAtTarget.copy(objPos);
-                    focusLookAtTarget.y += 0.5; // Titta på objektet, inte basen
+                    focusLookAtTarget.y += 0.5; 
                 } else {
-                    // För 2D-tavlor: Ställ oss rakt framför baserat på tavlans egen rotation
                     const rotY = hoveredArtwork.rotation.y;
                     focusCameraTarget.set(
                         objPos.x + Math.sin(rotY) * focusDist,
@@ -467,12 +571,14 @@
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
 
-            // Rotera hantverken sakta
+            // UPPDATERAD: Hantverken snurrar bara om du inte fokuserar på dem
             artworks.forEach(item => {
-                if (item.userData.modelMesh) item.userData.modelMesh.rotation.y += delta * 0.5;
+                if (item.userData.modelMesh && item !== focusedArtwork) {
+                    item.userData.modelMesh.rotation.y += delta * 0.5;
+                }
             });
 
-            if (characterModel) {
+            if (playerGroup) {
                 let moveX = 0, moveZ = 0;
                 if (keys.w) moveZ -= 1;
                 if (keys.s) moveZ += 1;
@@ -488,22 +594,22 @@
                     const s = Math.sin(cameraAngleX), c = Math.cos(cameraAngleX);
                     const worldDirX = dirX * c - dirZ * s, worldDirZ = dirX * s + dirZ * c;
 
-                    const nextX = characterModel.position.x + worldDirX * moveSpeed * delta;
-                    const nextZ = characterModel.position.z + worldDirZ * moveSpeed * delta;
+                    // UPPDATERAD: Vi flyttar "playerGroup" istället för modellen direkt!
+                    const nextX = playerGroup.position.x + worldDirX * moveSpeed * delta;
+                    const nextZ = playerGroup.position.z + worldDirZ * moveSpeed * delta;
 
                     const boundary = 19.5;
-                    if (nextX > -boundary && nextX < boundary) characterModel.position.x = nextX;
-                    if (nextZ > -boundary && nextZ < boundary) characterModel.position.z = nextZ;
+                    if (nextX > -boundary && nextX < boundary) playerGroup.position.x = nextX;
+                    if (nextZ > -boundary && nextZ < boundary) playerGroup.position.z = nextZ;
 
                     const targetAngle = Math.atan2(worldDirX, worldDirZ);
-                    let diff = targetAngle - characterModel.rotation.y;
+                    let diff = targetAngle - playerGroup.rotation.y;
                     while (diff < -Math.PI) diff += Math.PI * 2;
                     while (diff > Math.PI) diff -= Math.PI * 2;
-                    characterModel.rotation.y += diff * 12 * delta; 
+                    playerGroup.rotation.y += diff * 12 * delta; 
 
                     playAnimation('walk'); 
                     
-                    // Stäng panelen och bryt kamerans fokus om du börjar gå iväg! (NYTT)
                     if (isFocused) {
                         closeInfoPanel();
                     }
@@ -511,54 +617,88 @@
                     playAnimation('idle'); 
                 }
 
-                // KAMERA-FÖLJNING & FOKUS (UPPDATERAD LOGIK)
                 let targetCameraPos = new THREE.Vector3();
                 let targetLookAt = new THREE.Vector3();
 
                 if (isFocused) {
-                    // Sväva till det beräknade fokusläget framför konsten
                     targetCameraPos.copy(focusCameraTarget);
                     targetLookAt.copy(focusLookAtTarget);
                 } else {
-                    // Standard tredjepersonskamera runt karaktären
                     const offsetX = cameraDistance * Math.sin(cameraAngleY) * Math.sin(cameraAngleX);
                     const offsetY = cameraDistance * Math.cos(cameraAngleY);
                     const offsetZ = cameraDistance * Math.sin(cameraAngleY) * Math.cos(cameraAngleX);
-                    targetCameraPos.copy(characterModel.position).add(new THREE.Vector3(offsetX, offsetY, offsetZ));
-                    targetLookAt.copy(characterModel.position).add(new THREE.Vector3(0, 1.5, 0));
+                    // UPPDATERAD: Kameran följer playerGroup
+                    targetCameraPos.copy(playerGroup.position).add(new THREE.Vector3(offsetX, offsetY, offsetZ));
+                    targetLookAt.copy(playerGroup.position).add(new THREE.Vector3(0, 1.5, 0));
                 }
 
-                // Mjuk interpolering av positionen (lerp)
                 camera.position.lerp(targetCameraPos, 0.08);
 
-                // Mjuk interpolering av vart kameran "tittar"
-                if (currentLookAt.length() === 0) currentLookAt.copy(targetLookAt); // Första framen
+                if (currentLookAt.length() === 0) currentLookAt.copy(targetLookAt); 
                 currentLookAt.lerp(targetLookAt, 0.08);
                 camera.lookAt(currentLookAt);
+                
+                // NYTT: Dynamisk FOV Zoom!
+                const targetFOV = isFocused ? 45 : 75;
+                if (Math.abs(camera.fov - targetFOV) > 0.1) {
+                    camera.fov += (targetFOV - camera.fov) * 0.1;
+                    camera.updateProjectionMatrix();
+                }
+
+                // NYTT: Virtuella Guiden följer efter karaktären
+                if (guideBot) {
+                    const time = clock.getElapsedTime();
+                    // Räkna ut offset bakom/vänster om spelaren med en svävande y-våg
+                    const botOffset = new THREE.Vector3(-1.5, 2.0 + Math.sin(time * 2) * 0.1, -1.0);
+                    botOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), playerGroup.rotation.y);
+                    const botTarget = playerGroup.position.clone().add(botOffset);
+                    guideBot.position.lerp(botTarget, 0.05);
+                }
             }
 
-            // Raycasting för Hover
             raycaster.setFromCamera(mouse, camera);
             const intersects = raycaster.intersectObjects(artworks);
 
+            const holoUI = document.getElementById('hologram-ui');
+
             if (intersects.length > 0) {
                 document.body.style.cursor = 'crosshair';
+                
                 if (hoveredArtwork !== intersects[0].object) {
-                    if (hoveredArtwork) hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 0.0 : 0.3;
+                    if (hoveredArtwork) hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 0.0 : 0.5;
                     
                     hoveredArtwork = intersects[0].object;
-                    hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 1.5 : 1.5; 
+                    hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 2.5 : 2.5; 
                 }
+
+                // HOLOGRAFISK PROJEKTION LOGIK
+                if (!isFocused && hoveredArtwork) {
+                    const vector = hoveredArtwork.position.clone();
+                    vector.y += hoveredArtwork.userData.is3D ? 1.5 : 1.0; // Sväva över tavlan/montrar
+                    vector.project(camera);
+
+                    const x = (vector.x * .5 + .5) * window.innerWidth;
+                    const y = (vector.y * -.5 + .5) * window.innerHeight;
+
+                    holoUI.style.left = `${x}px`;
+                    holoUI.style.top = `${y}px`;
+                    holoUI.classList.remove('opacity-0');
+                    document.getElementById('hologram-title').innerText = hoveredArtwork.userData.info.title;
+                } else {
+                    holoUI.classList.add('opacity-0');
+                }
+
             } else {
                 document.body.style.cursor = 'default';
+                holoUI.classList.add('opacity-0'); // Göm hologrammet
                 if (hoveredArtwork) {
-                    hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 0.0 : 0.3;
+                    hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 0.0 : 0.5;
                     hoveredArtwork = null;
                 }
             }
 
             if (mixer) mixer.update(delta);
-            renderer.render(scene, camera);
+            composer.render();
         };
 
         window.onload = init;
