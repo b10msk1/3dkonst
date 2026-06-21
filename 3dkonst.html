@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gallery.Ops | 3D Exhibition</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Tailwind Konfiguration -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#0a0f1a',
+                        panel: '#0f172a',
+                        card: '#161d2b',
+                        accent: '#e58e26',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Three.js Kärna & GLTFLoader -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0a0f1a; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
+        .fade-out { opacity: 0; pointer-events: none; transition: opacity 0.5s ease-in-out; }
+        
+        /* UI Panel animering */
+        .panel-open { transform: translateX(0); }
+        .panel-closed { transform: translateX(100%); }
+    </style>
+</head>
+<body class="text-slate-100 font-sans selection:bg-accent/30">
+
+    <!-- Laddningsskärm -->
+    <div id="loader" class="absolute inset-0 z-50 flex flex-col items-center justify-center bg-dark transition-opacity duration-500">
+        <i data-lucide="loader-2" class="w-8 h-8 text-accent animate-spin mb-4"></i>
+        <p id="loading-text" class="text-accent text-[10px] font-black uppercase tracking-widest">Initierar 3D-motor...</p>
+    </div>
+
+    <!-- Taktisk Header -->
+    <header class="absolute top-6 left-6 right-6 z-10 flex justify-between items-center bg-panel/80 backdrop-blur-md px-6 py-4 rounded-[2rem] border border-[#1e293b] shadow-2xl">
+        <div class="flex items-center gap-3">
+            <i data-lucide="box" class="w-5 h-5 text-accent"></i>
+            <h1 class="text-slate-100 font-black uppercase italic tracking-tighter text-lg leading-none">
+                Gallery<span class="text-accent">.Ops</span>
+            </h1>
+        </div>
+
+        <nav class="flex gap-2">
+            <button class="flex items-center gap-2 px-4 py-2 bg-card rounded-2xl border border-[#1e293b] hover:border-accent transition-all group cursor-pointer">
+                <i data-lucide="user" class="w-3 h-3 text-slate-400 group-hover:text-accent transition-colors"></i>
+                <span class="text-[9px] font-black uppercase tracking-widest text-slate-400 group-hover:text-slate-100">Karaktär</span>
+            </button>
+            <button class="flex items-center gap-2 px-4 py-2 bg-card rounded-2xl border border-[#1e293b] hover:border-accent transition-all group cursor-pointer">
+                <i data-lucide="settings" class="w-3 h-3 text-slate-400 group-hover:text-accent transition-colors"></i>
+                <span class="text-[9px] font-black uppercase tracking-widest text-slate-400 group-hover:text-slate-100">System</span>
+            </button>
+        </nav>
+    </header>
+
+    <!-- Status panel -->
+    <div class="absolute bottom-6 left-6 z-10 flex flex-col gap-2 pointer-events-none">
+        <div class="bg-panel/80 backdrop-blur-md px-4 py-3 rounded-2xl border border-[#1e293b] flex items-center gap-3 shadow-xl">
+            <i data-lucide="crosshair" class="w-4 h-4 text-accent"></i>
+            <div class="flex flex-col">
+                <span class="text-[8px] font-black uppercase tracking-widest text-slate-500">Status</span>
+                <span id="system-status" class="text-[10px] font-black uppercase tracking-widest text-slate-100">System Online</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Taktisk Informations-Panel (Nytt!) -->
+    <div id="info-panel" class="absolute right-0 top-0 bottom-0 w-80 sm:w-96 bg-panel/95 backdrop-blur-xl border-l border-[#1e293b] panel-closed transition-transform duration-500 ease-in-out z-40 p-8 flex flex-col shadow-2xl">
+        <div class="flex justify-between items-center mb-8">
+            <div class="flex items-center gap-2">
+                <i data-lucide="database" class="w-4 h-4 text-accent"></i>
+                <h2 class="text-accent font-black uppercase tracking-widest text-[10px]">Objekt-data</h2>
+            </div>
+            <button id="close-panel" class="text-slate-500 hover:text-accent transition-colors bg-card p-2 rounded-xl border border-[#1e293b] hover:border-accent cursor-pointer">
+                <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+        </div>
+        
+        <h3 id="info-title" class="text-2xl font-black uppercase italic tracking-tighter text-slate-100 mb-4">Laddar...</h3>
+        <p id="info-desc" class="text-slate-400 text-sm leading-relaxed mb-6">...</p>
+        
+        <div class="mt-auto p-4 bg-dark rounded-2xl border border-[#1e293b]">
+            <span class="text-[8px] font-black uppercase tracking-widest text-slate-500 block mb-1">Status</span>
+            <span class="text-[10px] font-black uppercase tracking-widest text-accent flex items-center gap-2">
+                <div class="w-1.5 h-1.5 bg-accent rounded-full animate-pulse"></div>
+                Utställd / Hantverk
+            </span>
+        </div>
+    </div>
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <script>
+        lucide.createIcons();
+
+        // --- FILVÄGAR ---
+        const MODEL_URL = 'character_base.glb';
+        const IDLE_ANIM_URL = 'idle.glb';
+        const WALK_ANIM_URL = 'walk.glb';
+        const ARTWORK_URL_1 = 'min_tavla.jpg'; 
+
+        // 3D System Variabler
+        let scene, camera, renderer, clock;
+        let mixer, characterModel;
+        const animations = {}; 
+        let currentAction = null;
+
+        // Kamera & Interaktions-variabler
+        const mouse = new THREE.Vector2();
+        const raycaster = new THREE.Raycaster();
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let cameraAngleX = 0; 
+        let cameraAngleY = Math.PI / 6; 
+        const cameraDistance = 8;
+        const artworks = []; 
+        let hoveredArtwork = null;
+
+        // --- FOKUS-KAMERA VARIABLER (NYTT) ---
+        let isFocused = false;
+        let focusCameraTarget = new THREE.Vector3();
+        let focusLookAtTarget = new THREE.Vector3();
+        let currentLookAt = new THREE.Vector3(); // Används för mjuk blick-överföring
+
+        // Kontroll-variabler
+        const keys = { w: false, a: false, s: false, d: false };
+        const moveSpeed = 4.0;
+
+        const updateStatus = (text) => {
+            document.getElementById('loading-text').innerText = text;
+        };
+
+        const init = () => {
+            updateStatus("Kompilerar miljö...");
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color('#0a0f1a');
+            scene.fog = new THREE.FogExp2('#0a0f1a', 0.03);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 3, 7);
+            camera.lookAt(0, 1, 0);
+
+            clock = new THREE.Clock();
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xe58e26, 1.0);
+            dirLight.position.set(5, 10, 5);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            scene.add(dirLight);
+
+            buildGalleryRoom();
+
+            const loader = new THREE.GLTFLoader();
+            const loadGLTF = (url) => new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
+
+            const loadCharacterSystem = async () => {
+                try {
+                    updateStatus("Laddar huvudmodell...");
+                    const gltfModel = await loadGLTF(MODEL_URL);
+                    characterModel = gltfModel.scene;
+                    scene.add(characterModel);
+                    
+                    characterModel.castShadow = true;
+                    characterModel.traverse((node) => { if (node.isMesh) node.castShadow = true; });
+
+                    mixer = new THREE.AnimationMixer(characterModel);
+
+                    updateStatus("Injicerar animationer...");
+                    try {
+                        const gltfIdle = await loadGLTF(IDLE_ANIM_URL);
+                        if (gltfIdle.animations.length > 0) animations['idle'] = mixer.clipAction(gltfIdle.animations[0]);
+                        const gltfWalk = await loadGLTF(WALK_ANIM_URL);
+                        if (gltfWalk.animations.length > 0) animations['walk'] = mixer.clipAction(gltfWalk.animations[0]);
+                    } catch (e) { console.warn("Saknar animationsfiler, kör standard."); }
+
+                    if (animations['idle']) playAnimation('idle');
+
+                    finishLoading("Karaktär & System Online");
+                } catch (error) {
+                    createFallbackCharacter();
+                    finishLoading("Karaktär: Fallback");
+                }
+            };
+
+            loadCharacterSystem();
+
+            // Event Listeners
+            window.addEventListener('keydown', onKeyDown, false);
+            window.addEventListener('keyup', onKeyUp, false);
+            window.addEventListener('mousemove', onMouseMove, false);
+            window.addEventListener('mousedown', onMouseDown, false); // Klickhanterare för UI
+            window.addEventListener('mouseup', () => isDragging = false, false);
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Stäng UI-knapp
+            document.getElementById('close-panel').addEventListener('click', closeInfoPanel);
+
+            animate();
+        };
+
+        // --- BYGG GALLERIET ---
+        const buildGalleryRoom = () => {
+            const roomSize = 40;
+            const wallHeight = 8;
+
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x05080f, roughness: 0.8, metalness: 0.2 });
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomSize, roomSize), floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.9 });
+            const wallGeo = new THREE.PlaneGeometry(roomSize, wallHeight);
+
+            const backWall = new THREE.Mesh(wallGeo, wallMat);
+            backWall.position.set(0, wallHeight / 2, -roomSize / 2);
+            backWall.receiveShadow = true;
+            scene.add(backWall);
+
+            const frontWall = new THREE.Mesh(wallGeo, wallMat);
+            frontWall.position.set(0, wallHeight / 2, roomSize / 2);
+            frontWall.rotation.y = Math.PI;
+            frontWall.receiveShadow = true;
+            scene.add(frontWall);
+
+            const leftWall = new THREE.Mesh(wallGeo, wallMat);
+            leftWall.position.set(-roomSize / 2, wallHeight / 2, 0);
+            leftWall.rotation.y = Math.PI / 2;
+            leftWall.receiveShadow = true;
+            scene.add(leftWall);
+
+            const rightWall = new THREE.Mesh(wallGeo, wallMat);
+            rightWall.position.set(roomSize / 2, wallHeight / 2, 0);
+            rightWall.rotation.y = -Math.PI / 2;
+            rightWall.receiveShadow = true;
+            scene.add(rightWall);
+
+            // TAVLOR PÅ VÄGGEN (2D Konst)
+            addArtworkPlaceholder(0, 3, -roomSize / 2 + 0.1, 0, ARTWORK_URL_1, {
+                title: "Oljemålning 01",
+                desc: "Ett stämningsfullt verk som utforskar mörker och ljus."
+            });
+            addArtworkPlaceholder(-8, 3, -roomSize / 2 + 0.1, 0, null, {
+                title: "Skiss / Koncept",
+                desc: "Tidiga tankar kring form och textur."
+            });
+
+            // NYTT: HANTVERK / PIEDESTALER (3D Konst)
+            addHandicraftDisplay(8, 0, -8, {
+                title: "Keramikskulptur",
+                desc: "Handdrejad keramik formgiven med taktila ytor och mörk glasyr. En fysisk manifestation av galleriets tema."
+            });
+            
+            addHandicraftDisplay(-8, 0, -8, {
+                title: "Träsnideri",
+                desc: "Ett intrikat mönster uthugget i mörkt trä. Kräver en närmare blick för att avslöja detaljerna."
+            });
+        };
+
+        const addArtworkPlaceholder = (x, y, z, rotY, imageUrl, info) => {
+            const frameMat = new THREE.MeshStandardMaterial({ color: 0x161d2b, emissive: 0xe58e26, emissiveIntensity: 0.3, side: THREE.DoubleSide });
+            const frame = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 3.2), frameMat);
+            frame.position.set(x, y, z);
+            frame.rotation.y = rotY;
+            scene.add(frame);
+
+            let canvasMat = new THREE.MeshStandardMaterial({ color: 0x0a0f1a });
+            if (imageUrl && imageUrl !== 'min_tavla.jpg') {
+                const textureLoader = new THREE.TextureLoader();
+                const texture = textureLoader.load(imageUrl, (tex) => { tex.encoding = THREE.sRGBEncoding; });
+                canvasMat = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.3, metalness: 0.1 });
+            }
+
+            const canvasMesh = new THREE.Mesh(new THREE.PlaneGeometry(4, 3), canvasMat);
+            canvasMesh.position.set(x, y, z + 0.05);
+            canvasMesh.rotation.y = rotY;
+            
+            // Spara data för interaktion
+            canvasMesh.userData = { isArtwork: true, highlightMesh: frame, info: info };
+            artworks.push(canvasMesh);
+            scene.add(canvasMesh);
+
+            const spotLight = new THREE.SpotLight(0xfff0dd, 2.5);
+            spotLight.position.set(x + Math.sin(rotY) * 5, y + 4, z + Math.cos(rotY) * 5);
+            spotLight.target = canvasMesh;
+            spotLight.angle = Math.PI / 7;
+            spotLight.penumbra = 0.8;
+            spotLight.castShadow = true;
+            scene.add(spotLight);
+        };
+
+        // --- NYTT: PIEDESTAL FÖR HANTVERK ---
+        const addHandicraftDisplay = (x, y, z, info) => {
+            // Själva pelaren
+            const baseMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.9 });
+            const base = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1, 1.5, 32), baseMat);
+            base.position.set(x, y + 0.75, z);
+            base.receiveShadow = true;
+            base.castShadow = true;
+            scene.add(base);
+
+            // Interaktionsyta (Osynlig box för raycastern)
+            const hitBox = new THREE.Mesh(new THREE.BoxGeometry(2, 3, 2), new THREE.MeshBasicMaterial({ visible: false }));
+            hitBox.position.set(x, y + 1.5, z);
+            scene.add(hitBox);
+
+            // Accent-ring (lyser upp vid hover)
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.03, 16, 64), new THREE.MeshStandardMaterial({ color: 0xe58e26, emissive: 0xe58e26, emissiveIntensity: 0.0 }));
+            ring.position.set(x, y + 1.55, z);
+            ring.rotation.x = Math.PI / 2;
+            scene.add(ring);
+
+            // Spara data
+            hitBox.userData = { isArtwork: true, highlightMesh: ring, info: info, is3D: true };
+            artworks.push(hitBox);
+
+            // Platshållare för hantverket (Snurrande form)
+            const artGeo = new THREE.TorusKnotGeometry(0.3, 0.1, 100, 16);
+            const artMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.6, roughness: 0.4 });
+            const artMesh = new THREE.Mesh(artGeo, artMat);
+            artMesh.position.set(x, y + 2.2, z);
+            artMesh.castShadow = true;
+            hitBox.userData.modelMesh = artMesh; // Sparas för animation i render loopen
+            scene.add(artMesh);
+
+            // Ljussättning ovanifrån
+            const spotLight = new THREE.SpotLight(0xfff0dd, 1.5);
+            spotLight.position.set(x, y + 6, z);
+            spotLight.target = artMesh;
+            spotLight.angle = Math.PI / 8;
+            spotLight.penumbra = 0.5;
+            spotLight.castShadow = true;
+            scene.add(spotLight);
+        };
+
+        // --- UI FUNKTIONER ---
+        const openInfoPanel = (info) => {
+            document.getElementById('info-title').innerText = info.title;
+            document.getElementById('info-desc').innerText = info.desc;
+            document.getElementById('info-panel').classList.remove('panel-closed');
+            document.getElementById('info-panel').classList.add('panel-open');
+        };
+
+        const closeInfoPanel = () => {
+            isFocused = false; // Bryt fokusläget när panelen stängs (NYTT)
+            document.getElementById('info-panel').classList.remove('panel-open');
+            document.getElementById('info-panel').classList.add('panel-closed');
+        };
+
+        const playAnimation = (name) => {
+            const action = animations[name];
+            if (!action || currentAction === action) return;
+            if (currentAction) currentAction.fadeOut(0.3);
+            action.reset().fadeIn(0.3).play();
+            currentAction = action;
+        };
+
+        const createFallbackCharacter = () => {
+            const mat = new THREE.MeshStandardMaterial({ color: 0x0f172a, wireframe: true, emissive: 0xe58e26, emissiveIntensity: 0.2 });
+            characterModel = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), mat);
+            characterModel.position.y = 1;
+            characterModel.castShadow = true;
+            scene.add(characterModel);
+        };
+
+        const finishLoading = (statusText) => {
+            document.getElementById('loader').classList.add('fade-out');
+            document.getElementById('system-status').innerText = statusText;
+        };
+
+        const onWindowResize = () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        };
+
+        // --- INPUT & INTERAKTION ---
+        const onMouseMove = (event) => {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            if (isDragging && !isFocused) { // Förhindra orbit-snurr när vi är i fokusläge (NYTT)
+                const deltaX = event.clientX - previousMousePosition.x;
+                const deltaY = event.clientY - previousMousePosition.y;
+                cameraAngleX -= deltaX * 0.005;
+                cameraAngleY -= deltaY * 0.005;
+                cameraAngleY = Math.max(0.1, Math.min(Math.PI / 2.2, cameraAngleY));
+            }
+            previousMousePosition = { x: event.clientX, y: event.clientY };
+        };
+
+        const onMouseDown = () => {
+            isDragging = true;
+            
+            // Klick-interaktion för att öppna panelen och trigga Fokus-Kamera (UPPDATERAD)
+            if (hoveredArtwork && hoveredArtwork.userData.info && !isFocused) {
+                isFocused = true;
+                openInfoPanel(hoveredArtwork.userData.info);
+
+                const objPos = hoveredArtwork.position;
+                const is3D = hoveredArtwork.userData.is3D;
+                const focusDist = is3D ? 3.5 : 4.5; // Gå närmare hantverk, lite längre ifrån tavlor
+
+                if (is3D) {
+                    // För 3D-hantverk: Beräkna riktning från objektet till spelaren
+                    let dirToChar = new THREE.Vector3().subVectors(characterModel.position, objPos);
+                    dirToChar.y = 0; // Håll kameran plan
+                    dirToChar.normalize();
+                    
+                    focusCameraTarget.copy(objPos).add(dirToChar.multiplyScalar(focusDist));
+                    focusCameraTarget.y = objPos.y + 1.0; // Titta lite snett ovanifrån
+                    
+                    focusLookAtTarget.copy(objPos);
+                    focusLookAtTarget.y += 0.5; // Titta på objektet, inte basen
+                } else {
+                    // För 2D-tavlor: Ställ oss rakt framför baserat på tavlans egen rotation
+                    const rotY = hoveredArtwork.rotation.y;
+                    focusCameraTarget.set(
+                        objPos.x + Math.sin(rotY) * focusDist,
+                        objPos.y, 
+                        objPos.z + Math.cos(rotY) * focusDist
+                    );
+                    focusLookAtTarget.copy(objPos);
+                }
+            }
+        };
+
+        const onKeyDown = (event) => { if (keys.hasOwnProperty(event.key.toLowerCase())) keys[event.key.toLowerCase()] = true; };
+        const onKeyUp = (event) => { if (keys.hasOwnProperty(event.key.toLowerCase())) keys[event.key.toLowerCase()] = false; };
+
+        // --- RENDER LOOP ---
+        const animate = () => {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            // Rotera hantverken sakta
+            artworks.forEach(item => {
+                if (item.userData.modelMesh) item.userData.modelMesh.rotation.y += delta * 0.5;
+            });
+
+            if (characterModel) {
+                let moveX = 0, moveZ = 0;
+                if (keys.w) moveZ -= 1;
+                if (keys.s) moveZ += 1;
+                if (keys.a) moveX -= 1;
+                if (keys.d) moveX += 1;
+
+                const isMoving = moveX !== 0 || moveZ !== 0;
+
+                if (isMoving) {
+                    const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
+                    const dirX = moveX / length, dirZ = moveZ / length;
+                    
+                    const s = Math.sin(cameraAngleX), c = Math.cos(cameraAngleX);
+                    const worldDirX = dirX * c - dirZ * s, worldDirZ = dirX * s + dirZ * c;
+
+                    const nextX = characterModel.position.x + worldDirX * moveSpeed * delta;
+                    const nextZ = characterModel.position.z + worldDirZ * moveSpeed * delta;
+
+                    const boundary = 19.5;
+                    if (nextX > -boundary && nextX < boundary) characterModel.position.x = nextX;
+                    if (nextZ > -boundary && nextZ < boundary) characterModel.position.z = nextZ;
+
+                    const targetAngle = Math.atan2(worldDirX, worldDirZ);
+                    let diff = targetAngle - characterModel.rotation.y;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    characterModel.rotation.y += diff * 12 * delta; 
+
+                    playAnimation('walk'); 
+                    
+                    // Stäng panelen och bryt kamerans fokus om du börjar gå iväg! (NYTT)
+                    if (isFocused) {
+                        closeInfoPanel();
+                    }
+                } else {
+                    playAnimation('idle'); 
+                }
+
+                // KAMERA-FÖLJNING & FOKUS (UPPDATERAD LOGIK)
+                let targetCameraPos = new THREE.Vector3();
+                let targetLookAt = new THREE.Vector3();
+
+                if (isFocused) {
+                    // Sväva till det beräknade fokusläget framför konsten
+                    targetCameraPos.copy(focusCameraTarget);
+                    targetLookAt.copy(focusLookAtTarget);
+                } else {
+                    // Standard tredjepersonskamera runt karaktären
+                    const offsetX = cameraDistance * Math.sin(cameraAngleY) * Math.sin(cameraAngleX);
+                    const offsetY = cameraDistance * Math.cos(cameraAngleY);
+                    const offsetZ = cameraDistance * Math.sin(cameraAngleY) * Math.cos(cameraAngleX);
+                    targetCameraPos.copy(characterModel.position).add(new THREE.Vector3(offsetX, offsetY, offsetZ));
+                    targetLookAt.copy(characterModel.position).add(new THREE.Vector3(0, 1.5, 0));
+                }
+
+                // Mjuk interpolering av positionen (lerp)
+                camera.position.lerp(targetCameraPos, 0.08);
+
+                // Mjuk interpolering av vart kameran "tittar"
+                if (currentLookAt.length() === 0) currentLookAt.copy(targetLookAt); // Första framen
+                currentLookAt.lerp(targetLookAt, 0.08);
+                camera.lookAt(currentLookAt);
+            }
+
+            // Raycasting för Hover
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(artworks);
+
+            if (intersects.length > 0) {
+                document.body.style.cursor = 'crosshair';
+                if (hoveredArtwork !== intersects[0].object) {
+                    if (hoveredArtwork) hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 0.0 : 0.3;
+                    
+                    hoveredArtwork = intersects[0].object;
+                    hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 1.5 : 1.5; 
+                }
+            } else {
+                document.body.style.cursor = 'default';
+                if (hoveredArtwork) {
+                    hoveredArtwork.userData.highlightMesh.material.emissiveIntensity = hoveredArtwork.userData.is3D ? 0.0 : 0.3;
+                    hoveredArtwork = null;
+                }
+            }
+
+            if (mixer) mixer.update(delta);
+            renderer.render(scene, camera);
+        };
+
+        window.onload = init;
+    </script>
+</body>
+</html>
